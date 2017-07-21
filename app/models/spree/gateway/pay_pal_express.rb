@@ -54,8 +54,13 @@ module Spree
         # We need to store the transaction id for the future.
         # This is mainly so we can use it later on to refund the payment if the user wishes.
         transaction_id = pp_response.do_express_checkout_payment_response_details.payment_info.first.transaction_id
-        express_checkout.update_column(:transaction_id, transaction_id)
-        # This is rather hackish, required for payment/processing handle_response code.
+				express_checkout.update_column(:transaction_id, transaction_id)
+				####
+				payment = Spree::Payment.find_by_number(gateway_options[:order_id].split('-').last)
+				payment.update_column(:response_code, transaction_id)
+				#####
+				# This is rather hackish, required for payment/processing handle_response code.
+				
         Class.new do
           def success?; true; end
           def authorization; nil; end
@@ -96,9 +101,99 @@ module Spree
           :response_code => refund_transaction_response.RefundTransactionID,
           :state => 'completed'
         )
-      end
+			end
+			p refund_transaction_response
+			puts refund_transaction_response
+			puts 'xxx' * 100
       refund_transaction_response
+		end
+		
+def void(response_code, gateway_options={})
+      payment = Spree::Payment.find_by_response_code(response_code)
+      amount = payment.credit_allowed
+
+      #in case a partially refunded payment gets cancelled/voided, we don't want to act on the refunded payments
+      if amount.to_f > 0
+
+        # Process the refund
+        refund_type = payment.amount == amount.to_f ? "Full" : "Partial"
+
+        refund_transaction = provider.build_refund_transaction({
+                                                                   :TransactionID => payment.source.transaction_id,
+                                                                   :RefundType => refund_type,
+                                                                   :Amount => {
+                                                                       :currencyID => payment.currency,
+                                                                       :value => amount},
+                                                                   :RefundSource => "any"})
+
+        refund_transaction_response = provider.refund_transaction(refund_transaction)
+
+        if refund_transaction_response.success?
+          payment.source.update_attributes({
+                                               :refunded_at => Time.now,
+                                               :refund_transaction_id => refund_transaction_response.RefundTransactionID,
+                                               :state => "refunded",
+                                               :refund_type => refund_type
+                                           })
+          Class.new do
+            def success?;
+              true;
+            end
+
+            def authorization;
+              nil;
+            end
+          end.new
+        else
+          class << refund_transaction_response
+            def to_s
+              errors.map(&:long_message).join(" ")
+            end
+          end
+          refund_transaction_response
+        end
+      end
+
+      Class.new do
+        def success?;
+          true;
+        end
+
+        def authorization;
+          nil;
+        end
+      end.new
     end
+
+    def cancel(response_code)
+      void(response_code, {})
+    end
+
+		def credit(money, transaction_id, gateway_options)
+      payment = gateway_options[:originator].payment
+      amount = sprintf("%.2f", money.to_f / 100).to_f
+      refund_type = payment.amount == amount ? "Full" : "Partial"
+      refund_transaction = provider.build_refund_transaction({
+                                                                 :TransactionID => payment.source.transaction_id,
+                                                                 :RefundType => refund_type,
+                                                                 :Amount => {
+                                                                     :currencyID => payment.currency,
+                                                                     :value => amount},
+                                                                 :RefundSource => "any"})
+
+			refund_transaction_response = provider.refund_transaction(refund_transaction)
+			#p refund_transaction_response.RefundTransactionID
+      Class.new do
+        def success?;
+          true;
+        end
+
+        def authorization;
+          nil;
+        end
+      end.new
+		end
+		
   end
 end
 
