@@ -96,7 +96,7 @@ if defined?(Spree::Api)
 				private
 
 					def current_order
-						@order = current_api_user.orders.find_by!(number: params[:id])
+						@order = current_api_user.current_order
 					end
 					def line_item(item)
 						{
